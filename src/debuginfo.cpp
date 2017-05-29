@@ -698,13 +698,20 @@ openDebugInfo(StringRef debuginfopath, const debug_link_info &info)
 }
 
 static uint64_t jl_sysimage_base;
-static void **sysimg_fvars;
+static const char *sysimg_fvars_base = nullptr;
+static const int32_t *sysimg_fvars_offsets;
 static jl_method_instance_t **sysimg_fvars_linfo;
 static size_t sysimg_fvars_n;
-extern "C" void jl_register_fptrs(uint64_t sysimage_base, void **fptrs, jl_method_instance_t **linfos, size_t n)
+static const void *sysimg_fvars(size_t idx)
+{
+    return sysimg_fvars_base + sysimg_fvars_offsets[idx];
+}
+void jl_register_fptrs(uint64_t sysimage_base, const char *base, const int32_t *offsets,
+                       jl_method_instance_t **linfos, size_t n)
 {
     jl_sysimage_base = (uintptr_t)sysimage_base;
-    sysimg_fvars = fptrs;
+    sysimg_fvars_base = base;
+    sysimg_fvars_offsets = offsets;
     sysimg_fvars_linfo = linfos;
     sysimg_fvars_n = n;
 }
@@ -1001,7 +1008,7 @@ static int jl_getDylibFunctionInfo(jl_frame_t **frames, size_t pointer, int skip
         return 1;
     }
     frame0->fromC = !isSysImg;
-    if (isSysImg && sysimg_fvars) {
+    if (isSysImg && sysimg_fvars_base) {
 #if defined(_OS_LINUX_) && !defined(JL_DISABLE_LIBUNWIND)
         unw_proc_info_t pip;
         if (!saddr && unw_get_proc_info_by_ip(unw_local_addr_space,
@@ -1018,7 +1025,7 @@ static int jl_getDylibFunctionInfo(jl_frame_t **frames, size_t pointer, int skip
 #endif
         if (saddr) {
             for (size_t i = 0; i < sysimg_fvars_n; i++) {
-                if (saddr == sysimg_fvars[i]) {
+                if (saddr == sysimg_fvars(i)) {
                     frame0->linfo = sysimg_fvars_linfo[i];
                     break;
                 }
