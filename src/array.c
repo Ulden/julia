@@ -502,6 +502,7 @@ JL_DLLEXPORT jl_value_t *jl_arrayref(jl_array_t *a, size_t i)
             el_type = jl_nth_union_component(el_type, sel);
             if (jl_is_datatype_singleton((jl_datatype_t*)el_type))
                 return ((jl_datatype_t*)el_type)->instance;
+            elt = jl_new_bits(el_type, &((char*)a->data)[i*(a->elsize-1)]);
         }
         elt = jl_new_bits(el_type, &((char*)a->data)[i*a->elsize]);
     }
@@ -570,6 +571,8 @@ JL_DLLEXPORT void jl_arrayset(jl_array_t *a, jl_value_t *rhs, size_t i)
             *psel = nth;
             if (jl_is_datatype_singleton((jl_datatype_t*)el_type))
                 return;
+            jl_assign_bits(&((char*)a->data)[i*(a->elsize-1)], rhs);
+            return;
         }
         jl_assign_bits(&((char*)a->data)[i*a->elsize], rhs);
     }
