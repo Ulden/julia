@@ -30,7 +30,7 @@ static inline int store_unboxed(jl_value_t *el_type) // jl_isbits
         ((jl_datatype_t*)el_type)->layout->npointers == 0) || jl_union_isbits(el_type, &fsz, &al);
 }
 
-int jl_array_store_unboxed(jl_value_t *el_type)
+JL_DLLEXPORT int jl_array_store_unboxed(jl_value_t *el_type)
 {
     return store_unboxed(el_type);
 }
@@ -98,7 +98,7 @@ static jl_array_t *_new_array_(jl_value_t *atype, uint32_t ndims, size_t *dims,
         // No allocation or safepoint allowed after this
         a->flags.how = 0;
         data = (char*)a + doffs;
-        if (tot > 0 && !isunboxed)
+        // if ((tot > 0 && !isunboxed) || jl_is_uniontype(jl_tparam0(atype)))
             memset(data, 0, tot);
     }
     else {
@@ -110,7 +110,7 @@ static jl_array_t *_new_array_(jl_value_t *atype, uint32_t ndims, size_t *dims,
         // No allocation or safepoint allowed after this
         a->flags.how = 2;
         jl_gc_track_malloced_array(ptls, a);
-        if (!isunboxed)
+        // if (!isunboxed || jl_is_uniontype(jl_tparam0(atype)))
             memset(data, 0, tot);
     }
     a->flags.pooled = tsz <= GC_MAX_SZCLASS;
