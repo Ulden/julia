@@ -192,10 +192,12 @@ JL_DLLEXPORT jl_array_t *jl_reshape_array(jl_value_t *atype, jl_array_t *data,
     jl_value_t *eltype = jl_tparam0(atype);
     assert(jl_array_store_unboxed(eltype) == !data->flags.ptrarray);
     if (!data->flags.ptrarray) {
-        size_t elsz, al;
-        jl_islayout_inline(eltype, &elsz, &al);
-        a->elsize = elsz;
-        unsigned align = al;
+        a->elsize = jl_datatype_size(eltype);
+        unsigned align = jl_datatype_align(eltype);
+        // size_t elsz, al;
+        // jl_islayout_inline(eltype, &elsz, &al);
+        // a->elsize = elsz;
+        // unsigned align = al;
         jl_value_t *ownerty = jl_typeof(owner);
         unsigned oldalign = (ownerty == (jl_value_t*)jl_string_type ? 1 :
                              jl_datatype_align(jl_tparam0(ownerty)));
@@ -569,7 +571,7 @@ JL_DLLEXPORT void jl_arrayset(jl_array_t *a, jl_value_t *rhs, size_t i)
             uint8_t *psel = &((uint8_t*)a->data)[jl_arraymaxsize(a) * a->elsize + i];
             unsigned nth = 0;
             if (!jl_find_union_component(eltype, jl_typeof(rhs), &nth))
-                assert(0 && "invalid field assignment to isbits union");
+                assert(0 && "invalid arrayset to isbits union");
             *psel = nth;
             if (jl_is_datatype_singleton((jl_datatype_t*)eltype))
                 return;
