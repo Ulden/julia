@@ -2647,9 +2647,11 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                             lv->setAlignment(al);
                         Value *nbytes = ConstantInt::get(T_size, elsz);
                         Value *data = emit_arrayptr(ary, args[1], ctx);
-                        builder.CreateMemCpy(lv, builder.CreateGEP(T_int8, data, idx), nbytes, al);
-                        idx = builder.CreateAdd(idx, emit_arraymaxsize_prim(ary, ctx));
-                        Value *ptindex = builder.CreateGEP(T_int8, data, idx);
+                        Value *elidx = builder.CreateMul(idx, nbytes);
+                        builder.CreateMemCpy(lv, builder.CreateGEP(T_int8, data, elidx), nbytes, al);
+                        Value *selidx = builder.CreateMul(emit_arraymaxsize_prim(ary, ctx), nbytes);
+                        selidx = builder.CreateAdd(selidx, idx);
+                        Value *ptindex = builder.CreateGEP(T_int8, data, selidx);
                         Value *tindex = builder.CreateNUWAdd(ConstantInt::get(T_int8, 1), builder.CreateLoad(T_int8, ptindex));
                         *ret = mark_julia_slot(lv, ety, tindex, tbaa_stack);
                     }
@@ -2730,16 +2732,16 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                         }
                         if (jl_is_uniontype(ety)) {
                             // copy data
+                            Value *nbytes = ConstantInt::get(T_size, elsz);
                             Value *data = emit_arrayptr(ary, args[1], ctx);
-                            Value *elidx = builder.CreateMul(idx, emit_arrayelsize_prim(ary, ctx));
+                            Value *elidx = builder.CreateMul(idx, nbytes);
                             Value *addr = builder.CreateGEP(T_int8, data, elidx);
                             emit_unionmove(addr, rhs, NULL, false, NULL, ctx);
                             // compute tindex from rhs
                             jl_cgval_t rhs_union = convert_julia_type(rhs, ety, ctx);
                             Value *tindex = compute_tindex_unboxed(rhs_union, ety, ctx);
                             tindex = builder.CreateNUWSub(tindex, ConstantInt::get(T_int8, 1));
-                            Value *selidx = builder.CreateMul(emit_arraymaxsize_prim(ary, ctx),
-                                                              emit_arrayelsize_prim(ary, ctx));
+                            Value *selidx = builder.CreateMul(emit_arraymaxsize_prim(ary, ctx), nbytes);
                             selidx = builder.CreateAdd(selidx, idx);
                             Value *ptindex = builder.CreateGEP(T_int8, data, selidx);
                             builder.CreateStore(tindex, ptindex);

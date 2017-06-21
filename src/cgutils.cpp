@@ -1141,35 +1141,6 @@ static Value *emit_bounds_check(const jl_cgval_t &ainfo, jl_value_t *ty, Value *
     return im1;
 }
 
-// --- loading and storing ---
-
-static Value *compute_box_tindex(Value *datatype, jl_value_t *supertype, jl_value_t *ut, jl_codectx_t *ctx)
-{
-    Value *tindex = ConstantInt::get(T_int8, 0);
-    unsigned counter = 0;
-    for_each_uniontype_small(
-            [&](unsigned idx, jl_datatype_t *jt) {
-                if (jl_subtype((jl_value_t*)jt, supertype)) {
-                    Value *cmp = builder.CreateICmpEQ(maybe_decay_untracked(literal_pointer_val((jl_value_t*)jt)), datatype);
-                    tindex = builder.CreateSelect(cmp, ConstantInt::get(T_int8, idx), tindex);
-                }
-            },
-            ut,
-            counter);
-    return tindex;
-}
-
-// get the runtime tindex value
-static Value *compute_tindex_unboxed(const jl_cgval_t &val, jl_value_t *typ, jl_codectx_t *ctx)
-{
-    if (val.constant)
-        return ConstantInt::get(T_int8, get_box_tindex((jl_datatype_t*)jl_typeof(val.constant), typ));
-    if (val.isboxed)
-        return compute_box_tindex(emit_typeof_boxed(val, ctx), val.typ, typ, ctx);
-    assert(val.TIndex);
-    return builder.CreateAnd(val.TIndex, ConstantInt::get(T_int8, 0x7f));
-}
-
 // If given alignment is 0 and LLVM's assumed alignment for a load/store via ptr
 // might be stricter than the Julia alignment for jltype, return the alignment of jltype.
 // Otherwise return the given alignment.
@@ -1687,14 +1658,19 @@ static Value *emit_arrayflags(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
     return tbaa_decorate(tbaa_arrayflags, builder.CreateLoad(addr));
 }
 
-static Value *emit_arrayelsize_prim(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
- {
-     Value *t = boxed(tinfo, ctx);
-     int o = offsetof(jl_array_t, elsize) / sizeof(void*);
-     return emit_nthptr_recast(t, ConstantInt::get(T_size, o),
-                               tbaa_arrayelsize, T_psize);
- }
->>>>>>> d93fdf33a2... updates
+static Value *emit_arrayelsize(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
+{
+    Value *t = boxed(tinfo, ctx);
+#ifdef STORE_ARRAY_LEN
+    int elsize_field = 3;
+#else
+    int elsize_field = 2;
+#endif
+    Value *addr = builder.CreateStructGEP(nullptr,
+                                          emit_bitcast(decay_derived(t), jl_parray_llvmt),
+                                          elsize_field);
+    return tbaa_decorate(tbaa_const, builder.CreateLoad(addr));
+}
 
 static Value *emit_arraymaxlen_prim(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
  {
