@@ -480,7 +480,7 @@ JL_DLLEXPORT jl_value_t *jl_apply_array_type(jl_value_t *type, size_t dim)
 
 // array primitives -----------------------------------------------------------
 
-#ifndef STORE_ARRAY_LEN
+// #ifndef STORE_ARRAY_LEN
 JL_DLLEXPORT size_t jl_array_len_(jl_array_t *a)
 {
     size_t l = 1;
@@ -488,12 +488,22 @@ JL_DLLEXPORT size_t jl_array_len_(jl_array_t *a)
         l *= jl_array_dim(a, i);
     return l;
 }
-#endif
+// #endif
 
-static inline size_t jl_arraymaxsize(jl_array_t *a)
+JL_DLLEXPORT size_t jl_arraymaxsize(jl_array_t *a)
  {
      return a->flags.ndims == 1 ? a->maxsize : a->length;
  }
+
+JL_DLLEXPORT int jl_ptrarray(jl_array_t *a)
+ {
+     return a->flags.ptrarray;
+ }
+
+JL_DLLEXPORT int jl_elsize(jl_array_t *a)
+ {
+  return a->elsize;
+}
 
 JL_DLLEXPORT jl_value_t *jl_arrayref(jl_array_t *a, size_t i)
 {
@@ -575,7 +585,6 @@ JL_DLLEXPORT void jl_arrayset(jl_array_t *a, jl_value_t *rhs, size_t i)
             *psel = nth;
             if (jl_is_datatype_singleton((jl_datatype_t*)eltype))
                 return;
-            return;
         }
         jl_assign_bits(&((char*)a->data)[i * a->elsize], rhs);
     }

@@ -1687,19 +1687,14 @@ static Value *emit_arrayflags(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
     return tbaa_decorate(tbaa_arrayflags, builder.CreateLoad(addr));
 }
 
-static Value *emit_arrayelsize(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
-{
-    Value *t = boxed(tinfo, ctx);
-#ifdef STORE_ARRAY_LEN
-    int elsize_field = 3;
-#else
-    int elsize_field = 2;
-#endif
-    Value *addr = builder.CreateStructGEP(nullptr,
-                                          emit_bitcast(decay_derived(t), jl_parray_llvmt),
-                                          elsize_field);
-    return tbaa_decorate(tbaa_const, builder.CreateLoad(addr));
-}
+static Value *emit_arrayelsize_prim(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
+ {
+     Value *t = boxed(tinfo, ctx);
+     int o = offsetof(jl_array_t, elsize) / sizeof(void*);
+     return emit_nthptr_recast(t, ConstantInt::get(T_size, o),
+                               tbaa_arrayelsize, T_psize);
+ }
+>>>>>>> d93fdf33a2... updates
 
 static Value *emit_arraymaxlen_prim(const jl_cgval_t &tinfo, jl_codectx_t *ctx)
  {
@@ -2346,9 +2341,9 @@ static void emit_setfield(jl_datatype_t *sty, const jl_cgval_t &strct, size_t id
                 int fsz = jl_field_size(sty, idx0);
                 // compute tindex from rhs
                 jl_cgval_t rhs_union = convert_julia_type(rhs, jfty, ctx);
-                Value *ptindex = builder.CreateGEP(T_int8, emit_bitcast(addr, T_pint8), ConstantInt::get(T_size, fsz - 1));
                 Value *tindex = compute_tindex_unboxed(rhs_union, jfty, ctx);
                 tindex = builder.CreateNUWSub(tindex, ConstantInt::get(T_int8, 1));
+                Value *ptindex = builder.CreateGEP(T_int8, emit_bitcast(addr, T_pint8), ConstantInt::get(T_size, fsz - 1));
                 builder.CreateStore(tindex, ptindex);
                 // copy data
                 emit_unionmove(addr, rhs, NULL, false, NULL, ctx);

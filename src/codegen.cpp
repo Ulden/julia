@@ -232,6 +232,7 @@ static MDNode *tbaa_arraybuf;       // Data in an array of POD
 static MDNode *tbaa_array;      // jl_array_t
 static MDNode *tbaa_arrayptr;       // The pointer inside a jl_array_t
 static MDNode *tbaa_arraysize;      // A size in a jl_array_t
+static MDNode *tbaa_arrayelsize;    // elsize in a jl_array_t
 static MDNode *tbaa_arraylen;       // The len in a jl_array_t
 static MDNode *tbaa_arrayflags;     // The flags in a jl_array_t
 static MDNode *tbaa_const;      // Memory that is immutable by the time LLVM can see it
@@ -2649,7 +2650,7 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                         builder.CreateMemCpy(lv, builder.CreateGEP(T_int8, data, idx), nbytes, al);
                         idx = builder.CreateAdd(idx, emit_arraymaxsize_prim(ary, ctx));
                         Value *ptindex = builder.CreateGEP(T_int8, data, idx);
-                        Value *tindex = builder.CreateLoad(T_int8, ptindex);
+                        Value *tindex = builder.CreateNUWAdd(ConstantInt::get(T_int8, 1), builder.CreateLoad(T_int8, ptindex));
                         *ret = mark_julia_slot(lv, ety, tindex, tbaa_stack);
                     }
                     else {
@@ -2692,7 +2693,7 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                         emit_expr(args[2], ctx);
                     }
                     else {
-                        jl_cgval_t v = emit_expr(args[2], ctx);
+                        jl_cgval_t rhs = emit_expr(args[2], ctx);
                         PHINode *data_owner = NULL; // owner object against which the write barrier must check
                         if (isboxed) { // if not boxed we don't need a write barrier
                             assert(ary.isboxed);
@@ -2728,19 +2729,22 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                             data_owner->addIncoming(own_ptr, ownedBB);
                         }
                         if (jl_is_uniontype(ety)) {
-                            // compute tindex from rhs
-                            jl_cgval_t rhs_union = convert_julia_type(v, ety, ctx);
-                            Value *tindex = compute_tindex_unboxed(rhs_union, ety, ctx);
-                            tindex = builder.CreateNUWSub(tindex, ConstantInt::get(T_int8, 1));
                             // copy data
                             Value *data = emit_arrayptr(ary, args[1], ctx);
-                            Value *addr = builder.CreateGEP(T_int8, data, idx);
-                            emit_unionmove(addr, v, NULL, false, NULL, ctx);
-                            idx = builder.CreateAdd(idx, emit_arraymaxsize_prim(ary, ctx));
-                            Value *ptindex = builder.CreateGEP(T_int8, data, idx);
+                            Value *elidx = builder.CreateMul(idx, emit_arrayelsize_prim(ary, ctx));
+                            Value *addr = builder.CreateGEP(T_int8, data, elidx);
+                            emit_unionmove(addr, rhs, NULL, false, NULL, ctx);
+                            // compute tindex from rhs
+                            jl_cgval_t rhs_union = convert_julia_type(rhs, ety, ctx);
+                            Value *tindex = compute_tindex_unboxed(rhs_union, ety, ctx);
+                            tindex = builder.CreateNUWSub(tindex, ConstantInt::get(T_int8, 1));
+                            Value *selidx = builder.CreateMul(emit_arraymaxsize_prim(ary, ctx),
+                                                              emit_arrayelsize_prim(ary, ctx));
+                            selidx = builder.CreateAdd(selidx, idx);
+                            Value *ptindex = builder.CreateGEP(T_int8, data, selidx);
                             builder.CreateStore(tindex, ptindex);
                         } else {
-                            typed_store(emit_arrayptr(ary, args[1], ctx, isboxed), idx, v,
+                            typed_store(emit_arrayptr(ary, args[1], ctx, isboxed), idx, rhs,
                                         ety, ctx, !isboxed ? tbaa_arraybuf : tbaa_ptrarraybuf, data_owner, 0,
                                         false); // don't need to root the box if we had to make one since it's being stored in the array immediatly
                         }
@@ -6135,6 +6139,7 @@ static void init_julia_llvm_meta(void)
     std::tie(tbaa_array, tbaa_array_scalar) = tbaa_make_child("jtbaa_array");
     tbaa_arrayptr = tbaa_make_child("jtbaa_arrayptr", tbaa_array_scalar).first;
     tbaa_arraysize = tbaa_make_child("jtbaa_arraysize", tbaa_array_scalar).first;
+    tbaa_arrayelsize = tbaa_make_child("jtbaa_arrayelsize", tbaa_array_scalar).first;
     tbaa_arraylen = tbaa_make_child("jtbaa_arraylen", tbaa_array_scalar).first;
     tbaa_arrayflags = tbaa_make_child("jtbaa_arrayflags", tbaa_array_scalar).first;
     tbaa_const = tbaa_make_child("jtbaa_const", nullptr, true).first;
