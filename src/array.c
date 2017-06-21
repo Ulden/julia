@@ -22,17 +22,10 @@ extern "C" {
 
 // array constructors ---------------------------------------------------------
 
-static inline int store_unboxed(jl_value_t *el_type) // jl_isbits
+JL_DLLEXPORT int jl_array_store_unboxed(jl_value_t *eltype)
 {
-    size_t fsz = 0, al = 0;
-    return (jl_is_leaf_type(el_type) && jl_is_immutable(el_type) &&
-        ((jl_datatype_t*)el_type)->layout &&
-        ((jl_datatype_t*)el_type)->layout->npointers == 0) || jl_union_isbits(el_type, &fsz, &al);
-}
-
-JL_DLLEXPORT int jl_array_store_unboxed(jl_value_t *el_type)
-{
-    return store_unboxed(el_type);
+    size_t fsz, al;
+    return jl_islayout_inline(eltype, &fsz, &al);
 }
 
 STATIC_INLINE jl_value_t *jl_array_owner(jl_array_t *a)
@@ -78,6 +71,9 @@ static jl_array_t *_new_array_(jl_value_t *atype, uint32_t ndims, size_t *dims,
             // extra byte for all julia allocated byte arrays
             tot++;
         }
+        if (atype != NULL && jl_is_uniontype(jl_tparam0(atype))) {
+            tot += nel;
+        }
     }
     else {
         wideint_t prod = (wideint_t)sizeof(void*) * (wideint_t)nel;
@@ -98,7 +94,7 @@ static jl_array_t *_new_array_(jl_value_t *atype, uint32_t ndims, size_t *dims,
         // No allocation or safepoint allowed after this
         a->flags.how = 0;
         data = (char*)a + doffs;
-        // if ((tot > 0 && !isunboxed) || jl_is_uniontype(jl_tparam0(atype)))
+        if ((tot > 0 && !isunboxed) || (atype != NULL && jl_is_uniontype(jl_tparam0(atype))))
             memset(data, 0, tot);
     }
     else {
@@ -110,7 +106,7 @@ static jl_array_t *_new_array_(jl_value_t *atype, uint32_t ndims, size_t *dims,
         // No allocation or safepoint allowed after this
         a->flags.how = 2;
         jl_gc_track_malloced_array(ptls, a);
-        // if (!isunboxed || jl_is_uniontype(jl_tparam0(atype)))
+        if (!isunboxed || (atype != NULL && jl_is_uniontype(jl_tparam0(atype))))
             memset(data, 0, tot);
     }
     a->flags.pooled = tsz <= GC_MAX_SZCLASS;
@@ -142,18 +138,12 @@ static jl_array_t *_new_array_(jl_value_t *atype, uint32_t ndims, size_t *dims,
 
 static inline jl_array_t *_new_array(jl_value_t *atype, uint32_t ndims, size_t *dims)
 {
-    int isunboxed=0, elsz=sizeof(void*);
-    jl_value_t *el_type = jl_tparam0(atype);
-    isunboxed = store_unboxed(el_type);
-    if (isunboxed) {
-        if (jl_is_uniontype(el_type)) {
-            size_t fsz = 0, al = 0;
-            unsigned countbits = jl_union_isbits(el_type, &fsz, &al);
-            elsz = fsz + 1;
-        }
-        else {
-            elsz = jl_datatype_size(el_type);
-        }
+    jl_value_t *eltype = jl_tparam0(atype);
+    size_t elsz = 0, al = 0;
+    int isunboxed = jl_islayout_inline(eltype, &elsz, &al);
+    if (!isunboxed) {
+        elsz = sizeof(void*);
+        al = elsz;
     }
 
     return _new_array_(atype, ndims, dims, isunboxed, elsz);
@@ -199,12 +189,13 @@ JL_DLLEXPORT jl_array_t *jl_reshape_array(jl_value_t *atype, jl_array_t *data,
     a->data = NULL;
     a->flags.isaligned = data->flags.isaligned;
     jl_array_t *owner = (jl_array_t*)jl_array_owner(data);
-    jl_value_t *el_type = jl_tparam0(atype);
-    assert(store_unboxed(el_type) == !data->flags.ptrarray);
+    jl_value_t *eltype = jl_tparam0(atype);
+    assert(jl_array_store_unboxed(eltype) == !data->flags.ptrarray);
     if (!data->flags.ptrarray) {
-        //TODO: Union isbits array element types
-        a->elsize = jl_datatype_size(el_type);
-        unsigned align = jl_datatype_align(el_type);
+        size_t elsz, al;
+        jl_islayout_inline(eltype, &elsz, &al);
+        a->elsize = elsz;
+        unsigned align = al;
         jl_value_t *ownerty = jl_typeof(owner);
         unsigned oldalign = (ownerty == (jl_value_t*)jl_string_type ? 1 :
                              jl_datatype_align(jl_tparam0(ownerty)));
@@ -289,9 +280,12 @@ JL_DLLEXPORT jl_array_t *jl_ptr_to_array_1d(jl_value_t *atype, void *data,
     jl_array_t *a;
     jl_value_t *el_type = jl_tparam0(atype);
 
-    int isunboxed = store_unboxed(el_type);
+    int isunboxed = jl_array_store_unboxed(el_type);
     size_t elsz;
     unsigned align;
+    if (isunboxed && jl_is_uniontype(el_type))
+        jl_exceptionf(jl_argumenterror_type,
+                      "unsafe_wrap: unspecified layout for union element type");
     if (isunboxed) {
         elsz = jl_datatype_size(el_type);
         align = jl_datatype_align(el_type);
@@ -352,9 +346,12 @@ JL_DLLEXPORT jl_array_t *jl_ptr_to_array(jl_value_t *atype, void *data,
         return jl_ptr_to_array_1d(atype, data, nel, own_buffer);
     jl_value_t *el_type = jl_tparam0(atype);
 
-    int isunboxed = store_unboxed(el_type);
+    int isunboxed = jl_array_store_unboxed(el_type);
     size_t elsz;
     unsigned align;
+    if (isunboxed && jl_is_uniontype(el_type))
+        jl_exceptionf(jl_argumenterror_type,
+                      "unsafe_wrap: unspecified layout for union element type");
     if (isunboxed) {
         elsz = jl_datatype_size(el_type);
         align = jl_datatype_align(el_type);
@@ -491,20 +488,25 @@ JL_DLLEXPORT size_t jl_array_len_(jl_array_t *a)
 }
 #endif
 
+static inline size_t jl_arraymaxsize(jl_array_t *a)
+ {
+     return a->flags.ndims == 1 ? a->maxsize : a->length;
+ }
+
 JL_DLLEXPORT jl_value_t *jl_arrayref(jl_array_t *a, size_t i)
 {
     assert(i < jl_array_len(a));
     jl_value_t *elt;
     if (!a->flags.ptrarray) {
-        jl_value_t *el_type = (jl_value_t*)jl_tparam0(jl_typeof(a));
-        if (jl_is_uniontype(el_type)) {
-            uint8_t sel = ((uint8_t*)a->data)[jl_array_len(a) * (a->elsize-1) + i];
-            el_type = jl_nth_union_component(el_type, sel);
-            if (jl_is_datatype_singleton((jl_datatype_t*)el_type))
-                return ((jl_datatype_t*)el_type)->instance;
-            elt = jl_new_bits(el_type, &((char*)a->data)[i*(a->elsize-1)]);
+        jl_value_t *eltype = (jl_value_t*)jl_tparam0(jl_typeof(a));
+        if (jl_is_uniontype(eltype)) {
+            //TODO
+            uint8_t sel = ((uint8_t*)a->data)[jl_arraymaxsize(a) * a->elsize + i];
+            eltype = jl_nth_union_component(eltype, sel);
+            if (jl_is_datatype_singleton((jl_datatype_t*)eltype))
+                return ((jl_datatype_t*)eltype)->instance;
         }
-        elt = jl_new_bits(el_type, &((char*)a->data)[i*a->elsize]);
+        elt = jl_new_bits(eltype, &((char*)a->data)[i * a->elsize]);
     }
     else {
         elt = ((jl_value_t**)a->data)[i];
@@ -557,24 +559,23 @@ int jl_array_isdefined(jl_value_t **args0, int nargs)
 JL_DLLEXPORT void jl_arrayset(jl_array_t *a, jl_value_t *rhs, size_t i)
 {
     assert(i < jl_array_len(a));
-    jl_value_t *el_type = jl_tparam0(jl_typeof(a));
-    if (el_type != (jl_value_t*)jl_any_type) {
-        if (!jl_isa(rhs, el_type))
-            jl_type_error("arrayset", el_type, rhs);
+    jl_value_t *eltype = jl_tparam0(jl_typeof(a));
+    if (eltype != (jl_value_t*)jl_any_type) {
+        if (!jl_isa(rhs, eltype))
+            jl_type_error("arrayset", eltype, rhs);
     }
     if (!a->flags.ptrarray) {
-        if (jl_is_uniontype(el_type)) {
-            uint8_t *psel = &((uint8_t*)a->data)[jl_array_len(a) * (a->elsize-1) + i];
+        if (jl_is_uniontype(eltype)) {
+            uint8_t *psel = &((uint8_t*)a->data)[jl_arraymaxsize(a) * a->elsize + i];
             unsigned nth = 0;
-            if (!jl_find_union_component(el_type, jl_typeof(rhs), &nth))
+            if (!jl_find_union_component(eltype, jl_typeof(rhs), &nth))
                 assert(0 && "invalid field assignment to isbits union");
             *psel = nth;
-            if (jl_is_datatype_singleton((jl_datatype_t*)el_type))
+            if (jl_is_datatype_singleton((jl_datatype_t*)eltype))
                 return;
-            jl_assign_bits(&((char*)a->data)[i*(a->elsize-1)], rhs);
             return;
         }
-        jl_assign_bits(&((char*)a->data)[i*a->elsize], rhs);
+        jl_assign_bits(&((char*)a->data)[i * a->elsize], rhs);
     }
     else {
         ((jl_value_t**)a->data)[i] = rhs;
@@ -973,6 +974,12 @@ JL_DLLEXPORT jl_array_t *jl_array_copy(jl_array_t *ary)
     jl_array_t *new_ary = _new_array_(jl_typeof(ary), jl_array_ndims(ary),
                                       &ary->nrows, !ary->flags.ptrarray, elsz);
     memcpy(new_ary->data, ary->data, jl_array_len(ary) * elsz);
+    // ensure union isbits arrays copy their selector bytes correctly
+    if (!ary->flags.ptrarray && jl_is_uniontype(jl_tparam0(jl_typeof(ary)))) {
+        memcpy((char*)new_ary->data + jl_arraymaxsize(new_ary),
+               (char*)ary->data + jl_arraymaxsize(ary),
+               jl_array_len(ary));
+    }
     return new_ary;
 }
 

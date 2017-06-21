@@ -2625,7 +2625,8 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
         if (jl_is_array_type(aty_dt) && indexes_ok) {
             jl_value_t *ety = jl_tparam0(aty_dt);
             if (!jl_has_free_typevars(ety)) { // TODO: jn/foreigncall branch has a better predicate
-                if (!jl_array_store_unboxed(ety))
+                size_t elsz, al;
+                if (!jl_islayout_inline(ety, &elsz, &al))
                     ety = (jl_value_t*)jl_any_type;
                 jl_value_t *ndp = jl_tparam1(aty_dt);
                 if (jl_is_long(ndp) || nargs==2) {
@@ -2637,6 +2638,19 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                         assert(jl_is_datatype(ety));
                         assert(((jl_datatype_t*)ety)->instance != NULL);
                         *ret = ghostValue(ety);
+                    }
+                    else if (jl_is_uniontype(ety)) {
+                        Type *AT = ArrayType::get(IntegerType::get(jl_LLVMContext, 8 * al), (elsz + al - 1) / al);
+                        AllocaInst *lv = emit_static_alloca(AT, ctx);
+                        if (al > 1)
+                            lv->setAlignment(al);
+                        Value *nbytes = ConstantInt::get(T_size, elsz);
+                        Value *data = emit_arrayptr(ary, args[1], ctx);
+                        builder.CreateMemCpy(lv, builder.CreateGEP(T_int8, data, idx), nbytes, al);
+                        idx = builder.CreateAdd(idx, emit_arraymaxsize_prim(ary, ctx));
+                        Value *ptindex = builder.CreateGEP(T_int8, data, idx);
+                        Value *tindex = builder.CreateLoad(T_int8, ptindex);
+                        *ret = mark_julia_slot(lv, ety, tindex, tbaa_stack);
                     }
                     else {
                         *ret = typed_load(emit_arrayptr(ary, args[1], ctx), idx, ety, ctx,
@@ -2663,7 +2677,8 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
         if (jl_is_array_type(aty_dt) && indexes_ok) {
             jl_value_t *ety = jl_tparam0(aty_dt);
             if (!jl_has_free_typevars(ety) && jl_subtype(vty, ety)) { // TODO: jn/foreigncall branch has a better predicate
-                bool isboxed = !jl_array_store_unboxed(ety);
+                size_t elsz, al;
+                bool isboxed = !jl_islayout_inline(ety, &elsz, &al);
                 if (isboxed)
                     ety = (jl_value_t*)jl_any_type;
                 jl_value_t *ndp = jl_tparam1(aty_dt);
@@ -2712,9 +2727,23 @@ static bool emit_builtin_call(jl_cgval_t *ret, jl_value_t *f, jl_value_t **args,
                             data_owner->addIncoming(aryv, curBB);
                             data_owner->addIncoming(own_ptr, ownedBB);
                         }
-                        typed_store(emit_arrayptr(ary,args[1],ctx,isboxed), idx, v,
-                                    ety, ctx, !isboxed ? tbaa_arraybuf : tbaa_ptrarraybuf, data_owner, 0,
-                                    false); // don't need to root the box if we had to make one since it's being stored in the array immediatly
+                        if (jl_is_uniontype(ety)) {
+                            // compute tindex from rhs
+                            jl_cgval_t rhs_union = convert_julia_type(v, ety, ctx);
+                            Value *tindex = compute_tindex_unboxed(rhs_union, ety, ctx);
+                            tindex = builder.CreateNUWSub(tindex, ConstantInt::get(T_int8, 1));
+                            // copy data
+                            Value *data = emit_arrayptr(ary, args[1], ctx);
+                            Value *addr = builder.CreateGEP(T_int8, data, idx);
+                            emit_unionmove(addr, v, NULL, false, NULL, ctx);
+                            idx = builder.CreateAdd(idx, emit_arraymaxsize_prim(ary, ctx));
+                            Value *ptindex = builder.CreateGEP(T_int8, data, idx);
+                            builder.CreateStore(tindex, ptindex);
+                        } else {
+                            typed_store(emit_arrayptr(ary, args[1], ctx, isboxed), idx, v,
+                                        ety, ctx, !isboxed ? tbaa_arraybuf : tbaa_ptrarraybuf, data_owner, 0,
+                                        false); // don't need to root the box if we had to make one since it's being stored in the array immediatly
+                        }
                     }
                     *ret = ary;
                     JL_GC_POP();
@@ -6211,20 +6240,23 @@ static void init_julia_llvm_env(Module *m)
     jl_func_sig = FunctionType::get(T_prjlvalue, ftargs, false);
     assert(jl_func_sig != NULL);
 
-    Type *vaelts[] = {T_pint8
+    Type *vaelts[] = {T_pint8,
 #ifdef STORE_ARRAY_LEN
-                      , T_size
+                      T_size,
 #endif
-                      , T_int16
-                      , T_int16
+                      T_int16,
+                      T_int16,
+                      T_int32,
+                      T_size,
+                      T_size
     };
     static_assert(sizeof(jl_array_flags_t) == sizeof(int16_t),
                   "Size of jl_array_flags_t is not the same as int16_t");
     Type *jl_array_llvmt =
         StructType::create(jl_LLVMContext,
-                           ArrayRef<Type*>(vaelts,sizeof(vaelts)/sizeof(vaelts[0])),
+                           makeArrayRef(vaelts),
                            "jl_array_t");
-    jl_parray_llvmt = PointerType::get(jl_array_llvmt,0);
+    jl_parray_llvmt = PointerType::get(jl_array_llvmt, 0);
 
     global_to_llvm("__stack_chk_guard", (void*)&__stack_chk_guard, m);
     Function *jl__stack_chk_fail =
